@@ -104,6 +104,7 @@ export class Renderer {
     this.drawShip(b.enemy, ENEMY_PAL, view, b);
     this.drawTargets(view, b);
     this.drawProjectiles(b);
+    this.drawBeams(b);
     for (const p of b.particles) {
       ctx.globalAlpha = Math.max(0, p.life / p.max);
       ctx.fillStyle = p.color;
@@ -301,6 +302,28 @@ export class Renderer {
       ctx.fillStyle = pal.light;
       ctx.fillRect(x - 10, y - 12, W + 20, 4);
       ctx.fillRect(x - 10, y + H + 8, W + 20, 4);
+    } else if (style === 'wedge') {
+      engineGlow(x - 34, y + H * 0.2, 9);
+      engineGlow(x - 34, y + H * 0.8, 9);
+      ctx.beginPath();
+      ctx.moveTo(x - 26, y - 34); ctx.lineTo(x + W * 0.55, y - 20); ctx.lineTo(x + W + 56, y + H / 2);
+      ctx.lineTo(x + W * 0.55, y + H + 20); ctx.lineTo(x - 26, y + H + 34); ctx.lineTo(x - 12, y + H / 2);
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = pal.accent;
+      ctx.beginPath(); ctx.moveTo(x - 26, y - 34); ctx.lineTo(x + 10, y - 28); ctx.lineTo(x - 4, y - 18); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(x - 26, y + H + 34); ctx.lineTo(x + 10, y + H + 28); ctx.lineTo(x - 4, y + H + 18); ctx.fill();
+    } else if (style === 'citadel') {
+      for (const f of [0.2, 0.5, 0.8]) engineGlow(x - 40, y + H * f, 10);
+      ctx.fillStyle = pal.base;
+      roundRect(ctx, x - 36, y - 34, W * 0.55, H + 68, 18); ctx.fill(); ctx.stroke();
+      roundRect(ctx, x - 22, y - 20, W + 50, H + 40, 34); ctx.fill(); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(x + W + 24, y + 4); ctx.lineTo(x + W + 80, y + H / 2); ctx.lineTo(x + W + 24, y + H - 4);
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = pal.accent;
+      ctx.fillRect(x + W * 0.3, y - 30, 12, 10);
+      ctx.fillRect(x + W * 0.3, y + H + 20, 12, 10);
+      ctx.fillRect(x + W + 30, y + H / 2 - 3, 40, 6);
     } else if (style === 'raider') {
       engineGlow(x - 34, y + H / 2, 12);
       ctx.beginPath();
@@ -405,6 +428,43 @@ export class Renderer {
         ctx.beginPath(); ctx.moveTo(6, -3); ctx.lineTo(12, 0); ctx.lineTo(6, 3); ctx.fill();
         ctx.fillStyle = '#ffcf6b';
         ctx.fillRect(-14, -2, 4, 4);
+      }
+      ctx.restore();
+    }
+  }
+
+  private drawBeams(b: Battle) {
+    const ctx = this.ctx;
+    for (const beam of b.beams) {
+      let ex = beam.px, ey = beam.py;
+      if (beam.blocked) {
+        // stop the beam where it meets the shield bubble
+        let lo = 0, hi = 1;
+        for (let i = 0; i < 12; i++) {
+          const m = (lo + hi) / 2;
+          if (beam.target.insideShield(beam.mx + (beam.px - beam.mx) * m, beam.my + (beam.py - beam.my) * m)) hi = m;
+          else lo = m;
+        }
+        ex = beam.mx + (beam.px - beam.mx) * hi;
+        ey = beam.my + (beam.py - beam.my) * hi;
+      }
+      const fade = beam.t > beam.dur ? Math.max(0, 1 - (beam.t - beam.dur) / 0.25) : 1;
+      const col = beam.owner.side === 'player' ? '#ffb03a' : '#ff4fd0';
+      ctx.save();
+      ctx.globalAlpha = fade;
+      ctx.shadowColor = col;
+      ctx.shadowBlur = 16;
+      ctx.strokeStyle = col;
+      ctx.lineWidth = beam.def.damage > 1 ? 8 : 5;
+      line(ctx, beam.mx, beam.my, ex, ey);
+      ctx.strokeStyle = '#fff6e0';
+      ctx.lineWidth = 2;
+      line(ctx, beam.mx, beam.my, ex, ey);
+      if (!beam.blocked) {
+        ctx.strokeStyle = col;
+        ctx.globalAlpha = fade * 0.5;
+        ctx.lineWidth = 4;
+        line(ctx, beam.x0, beam.y0, ex, ey);
       }
       ctx.restore();
     }

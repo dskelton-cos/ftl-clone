@@ -1,4 +1,5 @@
-import { PLAYER_SHIP, makeEnemyDef } from '../data/ships';
+import type { ShipDef } from '../data/ships';
+import { RunFlow } from '../run/flow';
 import { POWER_ORDER, SYSTEM_INFO, type SystemId } from '../data/systems';
 import type { PadButton } from '../input/gamepad';
 import { PadInput } from '../input/gamepad';
@@ -13,8 +14,6 @@ export interface MenuItem { label: string; sub?: string | (() => string); action
 export interface Menu { title: string; body?: string; items: MenuItem[]; back?: () => void; wide?: boolean }
 export type PowerItem = { kind: 'sys'; id: SystemId } | { kind: 'wpn'; i: number };
 
-const CREW_NAMES = ['Vesk', 'Orin', 'Juno', 'Kade', 'Mira', 'Tal'];
-const CREW_COLORS = ['#f2b84b', '#5ec8e5', '#9b7cf0', '#7fd36b', '#f07ca0', '#e8e8e8'];
 const ENEMY_COLORS = ['#d9534f', '#c0703c', '#b84b8a', '#a3a03a'];
 const STEP = 1 / 60;
 
@@ -26,10 +25,9 @@ const POWER_MSG: Partial<Record<PowerResult, string>> = {
 };
 
 export class Game {
-  mode: 'title' | 'battle' | 'over' = 'title';
+  mode: 'title' | 'map' | 'battle' | 'over' = 'title';
   player: Ship | null = null;
   battle: Battle | null = null;
-  sector = 0;
   paused = false;
   device: Device = 'kbm';
   selCrew: Crew | null = null;
@@ -46,9 +44,11 @@ export class Game {
   sfx = new Sfx();
   private acc = 0;
   private padName: string | null = null;
-  private rand = makeRng(Date.now() & 0xffffffff);
+  rand = makeRng(Date.now() & 0xffffffff);
+  flow: RunFlow;
 
   constructor(public renderer: Renderer) {
+    this.flow = new RunFlow(this);
     this.showTitle();
   }
 
@@ -57,29 +57,23 @@ export class Game {
   showTitle() {
     this.mode = 'title';
     this.battle = null;
+    this.flow.state = null;
     this.openMenu({
       title: 'DRIFT PROTOCOL',
-      body: 'Command a fragile starship. Divide its power, direct its crew, and outlast the ships hunting you.',
+      body: 'Command a fragile starship. Divide its power, direct its crew, and outrun the Warden fleet across five sectors.',
       items: [
-        { label: 'New Run', action: () => this.startRun() },
+        { label: 'New Run', action: () => this.flow.start() },
         { label: 'Controls', action: () => this.showControls(() => this.showTitle()) },
       ],
     });
   }
 
-  startRun() {
-    this.player = new Ship(PLAYER_SHIP, 'player', CREW_NAMES, CREW_COLORS);
-    this.player.scrap = 10;
-    this.sector = 0;
-    this.nextEncounter();
-  }
-
-  nextEncounter() {
+  /** Begin combat against the given enemy design. The run flow decides what happens afterwards. */
+  startBattle(def: ShipDef) {
     const player = this.player!;
-    this.sector++;
     player.refit();
     player.placeAt(430, 330);
-    const enemy = new Ship(makeEnemyDef(this.sector, this.rand), 'enemy', ['Raider'], ENEMY_COLORS);
+    const enemy = new Ship(def, 'enemy', ['Raider'], ENEMY_COLORS);
     enemy.crew.forEach((c, i) => (c.color = ENEMY_COLORS[i % ENEMY_COLORS.length]));
     enemy.placeAt(ENEMY_PANEL.x + ENEMY_PANEL.w / 2, ENEMY_PANEL.y + ENEMY_PANEL.h / 2 + 20);
     this.battle = new Battle(player, enemy);
@@ -90,66 +84,21 @@ export class Game {
     this.armed = null;
     this.powerFocus = null;
     this.cursor = null;
-    this.menu = null;
-    this.menuVersion++;
-    this.toast(`Beacon ${this.sector}: hostile ${enemy.def.name} engaging!`);
+    this.closeMenu();
+    this.toast(`Hostile ${enemy.def.name} engaging!`);
   }
 
-  private showVictory() {
-    const b = this.battle!, p = this.player!;
-    const reward = 12 + this.sector * 4 + Math.floor(this.rand() * 10) + (b.crewKill ? 15 : 0);
-    const missiles = this.rand() < 0.5 ? 1 + Math.floor(this.rand() * 2) : 0;
-    p.scrap += reward;
-    p.missiles += missiles;
-    this.recordBest(this.sector);
-    const upgrade = (id: SystemId, cost: () => number): MenuItem => ({
-      label: `Upgrade ${SYSTEM_INFO[id].name}`,
-      sub: () => `${cost()} scrap`,
-      action: () => this.buy(cost(), () => { p.systems[id]!.level++; }),
-      disabled: () => p.scrap < cost() || p.systems[id]!.level >= SYSTEM_INFO[id].max,
-    });
-    const items: MenuItem[] = [
-      { label: 'Continue', sub: 'Jump to the next beacon', action: () => this.nextEncounter() },
-      { label: 'Repair hull +5', sub: '10 scrap', action: () => this.buy(10, () => (p.hull = Math.min(p.maxHull, p.hull + 5))), disabled: () => p.scrap < 10 || p.hull >= p.maxHull },
-      { label: 'Buy 3 missiles', sub: '8 scrap', action: () => this.buy(8, () => (p.missiles += 3)), disabled: () => p.scrap < 8 },
-      { label: 'Expand reactor +1', sub: `${20 + p.reactor * 3} scrap`, action: () => this.buy(20 + p.reactor * 3, () => p.reactor++), disabled: () => p.scrap < 20 + p.reactor * 3 },
-      upgrade('shields', () => 20 + p.systems.shields!.level * 8),
-      upgrade('engines', () => 12 + p.systems.engines!.level * 5),
-      upgrade('weapons', () => 18 + p.systems.weapons!.level * 6),
-    ];
-    this.openMenu({
-      title: b.crewKill ? 'ENEMY CREW ELIMINATED' : 'HOSTILE DESTROYED',
-      body: `Salvaged <b>${reward} scrap</b>${missiles ? ` and <b>${missiles} missile${missiles > 1 ? 's' : ''}</b>` : ''}. Spend it before you jump.`,
-      items,
-      wide: true,
-    });
-  }
-
-  private buy(cost: number, fn: () => void) {
-    const p = this.player!;
-    if (p.scrap < cost) return this.sfx.play('deny');
-    p.scrap -= cost;
-    fn();
-    p.updatePower();
-    this.sfx.play('click');
-    this.menuVersion++;
-  }
-
-  private showGameOver() {
-    this.mode = 'over';
-    this.recordBest(this.sector - 1);
-    this.openMenu({
-      title: 'SHIP LOST',
-      body: `Your ship was destroyed at beacon ${this.sector}.<br>Hostiles defeated: <b>${this.sector - 1}</b> · Best run: <b>${this.best}</b>`,
-      items: [
-        { label: 'New Run', action: () => this.startRun() },
-        { label: 'Title Screen', action: () => this.showTitle() },
-      ],
-    });
+  /** Leave combat (or any screen) and return to the sector map. */
+  showMap() {
+    this.battle = null;
+    this.mode = 'map';
+    this.paused = false;
+    this.closeMenu();
+    this.flow.focusDefault();
   }
 
   openPauseMenu() {
-    if (this.mode !== 'battle') return;
+    if (this.mode !== 'battle' && this.mode !== 'map') return;
     this.openMenu({
       title: 'PAUSED',
       items: [
@@ -203,9 +152,8 @@ export class Game {
       for (const s of b.sfx) this.sfx.play(s);
       b.sfx.length = 0;
       if (this.selCrew && !b.player.crew.includes(this.selCrew)) this.selCrew = null;
-      if (b.result === 'fled') { this.toast('Jumped away!'); this.nextEncounter(); }
-      else if (b.result === 'win' && b.resultTime > 1.8) this.showVictory();
-      else if (b.result === 'lose' && b.resultTime > 1.8) this.showGameOver();
+      if (b.result === 'fled') { this.toast('Jumped away! Choose a beacon.'); this.flow.onBattleEnd('fled'); }
+      else if (b.result && b.resultTime > 1.8) this.flow.onBattleEnd(b.result);
     }
     this.renderer.draw(
       { battle: this.battle, selCrew: this.selCrew, armed: this.armed, hover: this.hover, cursor: this.cursor, paused: this.paused && !this.menu },
@@ -218,7 +166,7 @@ export class Game {
     if (this.toasts.length > 3) this.toasts.shift();
   }
 
-  private recordBest(n: number) {
+  recordBest(n: number) {
     if (n > this.best) {
       this.best = n;
       try { localStorage.setItem('drift.best', String(n)); } catch { /* storage unavailable */ }
@@ -339,6 +287,7 @@ export class Game {
   onPad(btn: PadButton) {
     this.device = 'pad';
     if (this.menu) return this.menuInput(btn);
+    if (this.mode === 'map') return this.flow.padInput(btn);
     if (this.mode !== 'battle' || !this.battle) return;
     const b = this.battle;
     switch (btn) {
@@ -414,7 +363,7 @@ export class Game {
     }
   }
 
-  private menuInput(btn: PadButton | 'ENTER' | 'ESC') {
+  menuInput(btn: PadButton | 'ENTER' | 'ESC') {
     const m = this.menu!;
     const n = m.items.length;
     if (btn === 'UP' || btn === 'LEFT') this.menuFocus = (this.menuFocus - 1 + n) % n;
@@ -447,6 +396,7 @@ export class Game {
       if (map[k]) { e.preventDefault(); this.menuInput(map[k]); }
       return;
     }
+    if (this.mode === 'map') return this.flow.keyInput(e);
     if (this.mode !== 'battle') return;
     const lower = k.toLowerCase();
     if (k === ' ' || lower === 'p') { e.preventDefault(); return this.togglePause(); }
@@ -506,7 +456,15 @@ export class Game {
   onHudAction(act: string, arg: string, button: number) {
     this.device = 'kbm';
     this.sfx.unlock();
-    if (this.mode !== 'battle' || this.menu) return;
+    if (this.menu) return;
+    if (this.mode === 'map') {
+      if (act === 'node') this.flow.click(Number(arg));
+      else if (act === 'upgrades') this.flow.upgrades(() => this.closeMenu());
+      else if (act === 'distress') this.flow.distress();
+      else if (act === 'menu') this.openPauseMenu();
+      return;
+    }
+    if (this.mode !== 'battle') return;
     const right = button === 2;
     switch (act) {
       case 'sys': return right ? this.powerDown(arg as SystemId) : this.powerUp(arg as SystemId);
@@ -554,5 +512,7 @@ const CONTROLS_HTML = `
 <tr><td>Cancel</td><td>Right-click / Esc</td><td>B</td></tr>
 <tr><td>Jump away</td><td>J or the JUMP button</td><td>RT</td></tr>
 <tr><td>Menu</td><td>Esc</td><td>Back / Select</td></tr>
+<tr><td>Map: choose beacon</td><td>Click a beacon (or arrows + Enter)</td><td>D-pad / stick, A</td></tr>
+<tr><td>Map: ship upgrades</td><td>U or the Upgrades button</td><td>Y</td></tr>
 </table>
 <p class="tip">Crew standing in a room repair damage, put out fires and seal breaches automatically. Crew at Piloting, Engines, Shields and Weapons give bonuses.</p>`;

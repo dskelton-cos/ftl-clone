@@ -1,6 +1,6 @@
 import type { WeaponDef } from '../data/weapons';
 import { crewAI, pickTarget } from './ai';
-import type { Room, Ship, Weapon } from './ship';
+import { TILE, type Room, type Ship, type Weapon } from './ship';
 
 export interface Projectile {
   def: WeaponDef;
@@ -16,14 +16,28 @@ export interface Projectile {
   dead: boolean;
 }
 
+export interface Beam {
+  def: WeaponDef;
+  owner: Ship;
+  target: Ship;
+  mx: number; my: number; // emitter
+  x0: number; y0: number; x1: number; y1: number; // sweep across the target
+  px: number; py: number; // current beam tip
+  t: number;
+  dur: number;
+  hit: Set<Room>;
+  blocked: boolean;
+}
+
 export interface Particle { x: number; y: number; vx: number; vy: number; life: number; max: number; color: string; size: number }
 export interface FloatText { x: number; y: number; text: string; color: string; life: number }
 export type BattleResult = 'win' | 'lose' | 'fled' | null;
-export type SfxName = 'laser' | 'missile' | 'ion' | 'hit' | 'shield' | 'miss' | 'explode' | 'death';
+export type SfxName = 'laser' | 'missile' | 'ion' | 'beam' | 'hit' | 'shield' | 'miss' | 'explode' | 'death';
 
 /** One encounter between the player and an enemy ship. Pure simulation: no DOM, no rendering. */
 export class Battle {
   projectiles: Projectile[] = [];
+  beams: Beam[] = [];
   particles: Particle[] = [];
   texts: FloatText[] = [];
   sfx: SfxName[] = [];
@@ -67,6 +81,7 @@ export class Battle {
     }
 
     this.updateProjectiles(dt);
+    this.updateBeams(dt);
     for (const p of this.particles) {
       p.x += p.vx * dt; p.y += p.vy * dt;
       p.vx *= 1 - 2 * dt; p.vy *= 1 - 2 * dt;
@@ -132,6 +147,18 @@ export class Battle {
     const rr = target.roomRect(room);
     const tx = rr.x + rr.w / 2 + (Math.random() - 0.5) * (rr.w - 14);
     const ty = rr.y + rr.h / 2 + (Math.random() - 0.5) * (rr.h - 14);
+    if (w.def.kind === 'beam') {
+      const dir = room.cy < target.gridH / 2 ? 1 : -1;
+      const y0 = rr.y + rr.h / 2 - dir * Math.min(rr.h / 2 - 6, TILE * 0.4);
+      const x = rr.x + rr.w / 2 + (Math.random() - 0.5) * (rr.w - 16);
+      this.beams.push({
+        def: w.def, owner: ship, target, mx: m.x, my: m.y,
+        x0: x, y0, x1: x, y1: y0 + dir * w.def.beamLength * TILE, px: x, py: y0,
+        t: 0, dur: 0.9, hit: new Set(), blocked: false,
+      });
+      this.sfx.push('beam');
+      return;
+    }
     const d = Math.hypot(tx - m.x, ty - m.y) || 1;
     const s = w.def.speed;
     this.projectiles.push({
@@ -180,8 +207,34 @@ export class Battle {
     this.projectiles = this.projectiles.filter((p) => !p.dead);
   }
 
+  private updateBeams(dt: number) {
+    for (const b of this.beams) {
+      b.t += dt;
+      const f = Math.min(1, b.t / b.dur);
+      b.px = b.x0 + (b.x1 - b.x0) * f;
+      b.py = b.y0 + (b.y1 - b.y0) * f;
+      const t = b.target;
+      if (t.dead || f >= 1) continue;
+      const dmg = b.def.damage - t.shieldLayers;
+      b.blocked = dmg <= 0;
+      if (t.shieldLayers > 0) t.shieldFlash = Math.max(t.shieldFlash, 0.12);
+      if (b.blocked) continue;
+      const room = t.roomAtPixel(b.px, b.py);
+      if (room && !b.hit.has(room)) {
+        b.hit.add(room);
+        this.damageRoom(t, room, b.def, b.px, b.py, dmg);
+      }
+      if (Math.random() < 0.5) this.particles.push({ x: b.px, y: b.py, vx: (Math.random() - 0.5) * 60, vy: (Math.random() - 0.5) * 60, life: 0.4, max: 0.4, color: '#ffe08a', size: 3 });
+    }
+    this.beams = this.beams.filter((b) => b.t < b.dur + 0.25);
+  }
+
   private applyHit(p: Projectile) {
-    const { target, room, def } = p;
+    this.damageRoom(p.target, p.room, p.def, p.x, p.y, p.def.damage);
+  }
+
+  private damageRoom(target: Ship, room: Room, def: WeaponDef, x: number, y: number, damage: number) {
+    const p = { x, y };
     const sys = room.system;
     if (def.kind === 'ion') {
       if (sys) { sys.ion = Math.min(sys.level, sys.ion + def.ion); sys.ionTimer = 5; }
@@ -190,16 +243,16 @@ export class Battle {
       this.sfx.push('shield');
       return;
     }
-    target.hull = Math.max(0, target.hull - def.damage);
-    if (sys) sys.damage = Math.min(sys.level, sys.damage + def.damage);
+    target.hull = Math.max(0, target.hull - damage);
+    if (sys) sys.damage = Math.min(sys.level, sys.damage + damage);
     for (const c of target.crew) {
-      if (c.room === room) { c.hp -= 15 * def.damage; c.flash = 0.3; }
+      if (c.room === room) { c.hp -= 15 * damage; c.flash = 0.3; }
     }
     if (Math.random() < def.fireChance) room.fire = Math.max(room.fire, 40);
     if (Math.random() < def.breachChance) room.breach = 100;
     this.burst(p.x, p.y, '#ffb347', 18, 170);
     this.burst(p.x, p.y, '#fff1c1', 6, 80);
-    this.text(p.x, p.y - 14, `-${def.damage}`, '#ffcf6b');
+    this.text(p.x, p.y - 14, `-${damage}`, '#ffcf6b');
     if (target === this.player) this.shake = 8;
     this.sfx.push('hit');
   }

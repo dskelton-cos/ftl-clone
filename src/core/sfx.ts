@@ -18,6 +18,7 @@ export class Sfx {
     switch (name) {
       case 'laser': return this.tone(900, 180, 0.12, 'square', 0.05);
       case 'missile': this.noise(0.35, 0.08, 900); return this.tone(220, 90, 0.3, 'sawtooth', 0.04);
+      case 'beam': return this.tone(140, 260, 0.9, 'sawtooth', 0.05);
       case 'ion': return this.tone(1400, 500, 0.18, 'sine', 0.07);
       case 'hit': return this.noise(0.3, 0.16, 600);
       case 'shield': return this.tone(500, 1200, 0.15, 'triangle', 0.06);

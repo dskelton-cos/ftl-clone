@@ -2,6 +2,7 @@ import { SYSTEM_INFO } from '../data/systems';
 import type { Game } from '../core/game';
 import type { ShipSystem } from '../sim/ship';
 import { svgIcon } from './icons';
+import { renderMap } from './mapview';
 
 /**
  * HTML overlay. Each section is rebuilt as a string and only written to the DOM when it changes.
@@ -13,7 +14,7 @@ export class Hud {
   private menuVersion = -1;
 
   constructor(private root: HTMLElement, private overlay: HTMLElement, private game: Game) {
-    for (const id of ['status', 'crew', 'ftl', 'enemy', 'power', 'hints', 'toasts', 'banner']) {
+    for (const id of ['map', 'status', 'crew', 'ftl', 'enemy', 'power', 'hints', 'toasts', 'banner']) {
       const el = document.createElement('div');
       el.id = `hud-${id}`;
       root.appendChild(el);
@@ -25,6 +26,10 @@ export class Hud {
       e.preventDefault();
       e.stopPropagation();
       game.onHudAction(t.dataset.act!, t.dataset.arg ?? '', e.button);
+    });
+    root.addEventListener('pointerover', (e) => {
+      const t = (e.target as HTMLElement).closest<HTMLElement>('[data-act="node"]');
+      if (t) game.flow.focus = Number(t.dataset.arg);
     });
     overlay.addEventListener('pointerdown', (e) => {
       const t = (e.target as HTMLElement).closest<HTMLElement>('[data-mi]');
@@ -49,10 +54,14 @@ export class Hud {
     const g = this.game;
     this.renderMenu();
     const b = g.battle;
-    this.root.style.display = b ? '' : 'none';
+    const p = g.player;
+    const onMap = g.mode === 'map' && !!g.flow.state;
+    this.root.style.display = p && (b || onMap) ? '' : 'none';
     this.set(this.els.toasts, g.toasts.map((t) => `<div class="toast" style="opacity:${Math.min(1, t.life)}">${t.text}</div>`).join(''));
-    if (!b) return;
-    const p = b.player, e = b.enemy;
+    if (!p) return;
+    this.els.map.style.display = onMap ? '' : 'none';
+    this.els.enemy.style.display = this.els.power.style.display = b ? '' : 'none';
+    if (onMap) this.set(this.els.map, renderMap(g));
 
     // --- status: hull, shields, evasion
     const hullSegs = segs(p.hull, p.maxHull);
@@ -80,11 +89,21 @@ export class Hud {
 
     // --- jump drive and resources
     const ready = p.jumpCharge >= 1 && p.canJump;
+    const sector = g.flow.state ? g.flow.state.sector + 1 : 1;
     this.set(this.els.ftl, `
-      <div class="res"><span title="Scrap">⬢ <b>${p.scrap}</b></span><span title="Missiles">➤ <b>${p.missiles}</b></span><span>BEACON <b>${g.sector}</b></span></div>
-      <div class="ftl-row"><div class="ftlbar"><div style="width:${Math.round(p.jumpCharge * 100)}%"></div></div>
+      <div class="res"><span title="Scrap">⬢ <b>${p.scrap}</b> scrap</span><span title="Fuel" class="${p.fuel <= 2 ? 'low' : ''}">⛽ <b>${p.fuel}</b> fuel</span><span title="Missiles">➤ <b>${p.missiles}</b></span><span>SECTOR <b>${sector}</b></span>
+      ${b ? '' : '<button class="iconbtn" data-act="menu" title="Menu">☰</button>'}</div>
+      ${b ? `<div class="ftl-row"><div class="ftlbar"><div style="width:${Math.round(p.jumpCharge * 100)}%"></div></div>
       <button class="jump ${ready ? 'ready' : ''}" data-act="jump">JUMP${g.device === 'pad' ? ' <kbd>RT</kbd>' : ' <kbd>J</kbd>'}</button>
-      <button class="iconbtn" data-act="menu" title="Menu">☰</button></div>`);
+      <button class="iconbtn" data-act="menu" title="Menu">☰</button></div>` : ''}`);
+    if (!b) {
+      this.set(this.els.hints, g.device === 'pad'
+        ? '<kbd>Stick</kbd> choose beacon <kbd>A</kbd> jump <kbd>Y</kbd> upgrades <kbd>Back</kbd> menu'
+        : 'Click a linked beacon to jump · <kbd>U</kbd> upgrades · <kbd>Esc</kbd> menu');
+      this.set(this.els.banner, '');
+      return;
+    }
+    const e = b.enemy;
 
     // --- enemy summary
     const esh = e.systems.shields;

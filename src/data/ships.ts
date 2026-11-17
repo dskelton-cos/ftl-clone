@@ -2,7 +2,7 @@ import type { SystemId } from './systems';
 import { WEAPONS } from './weapons';
 
 export interface RoomDef { x: number; y: number; w: number; h: number; system?: SystemId }
-export type HullStyle = 'cruiser' | 'raider' | 'cutter' | 'bulwark';
+export type HullStyle = 'cruiser' | 'raider' | 'cutter' | 'bulwark' | 'wedge' | 'citadel';
 
 export interface ShipDef {
   name: string;
@@ -68,6 +68,19 @@ const TEMPLATES: { style: HullStyle; rooms: RoomDef[] }[] = [
     ],
   },
   {
+    style: 'wedge',
+    rooms: [
+      { x: 0, y: 2, w: 1, h: 1, system: 'piloting' },
+      { x: 1, y: 1, w: 2, h: 1, system: 'weapons' },
+      { x: 1, y: 2, w: 2, h: 1 },
+      { x: 1, y: 3, w: 2, h: 1, system: 'shields' },
+      { x: 3, y: 0, w: 2, h: 2, system: 'engines' },
+      { x: 3, y: 2, w: 1, h: 1, system: 'oxygen' },
+      { x: 4, y: 2, w: 1, h: 1 },
+      { x: 3, y: 3, w: 2, h: 2, system: 'medbay' },
+    ],
+  },
+  {
     style: 'bulwark',
     rooms: [
       { x: 0, y: 1, w: 1, h: 2, system: 'piloting' },
@@ -82,30 +95,57 @@ const TEMPLATES: { style: HullStyle; rooms: RoomDef[] }[] = [
   },
 ];
 
-const NAMES = ['Rust Corsair', 'Toll Collector', 'Ashen Cutter', 'Scav Hauler', 'Rift Marauder', 'Grey Warden', 'Hollow Pike'];
+const BOSS_ROOMS: RoomDef[] = [
+  { x: 0, y: 1, w: 1, h: 3, system: 'piloting' },
+  { x: 1, y: 0, w: 2, h: 2, system: 'weapons' },
+  { x: 1, y: 2, w: 2, h: 1 },
+  { x: 1, y: 3, w: 2, h: 2, system: 'shields' },
+  { x: 3, y: 0, w: 2, h: 1, system: 'oxygen' },
+  { x: 3, y: 1, w: 2, h: 3 },
+  { x: 3, y: 4, w: 2, h: 1, system: 'medbay' },
+  { x: 5, y: 0, w: 2, h: 2 },
+  { x: 5, y: 3, w: 2, h: 2 },
+  { x: 5, y: 2, w: 3, h: 1, system: 'engines' },
+];
 
-export function makeEnemyDef(sector: number, rand: () => number): ShipDef {
-  const pick = <T,>(a: T[]) => a[Math.floor(rand() * a.length)];
-  const tpl = sector >= 4 && rand() < 0.5 ? TEMPLATES[2] : pick(TEMPLATES.slice(0, 2));
-  const tier1 = ['needle', 'volley', 'ion'];
-  const tier2 = ['scatter', 'slug', 'lance', 'volley'];
-  const count = sector < 3 ? 1 : sector < 7 ? 2 : 3;
-  const weapons: string[] = [];
-  for (let i = 0; i < count; i++) weapons.push(pick(sector >= 4 && rand() < 0.15 * sector ? tier2 : tier1));
+const NAMES = ['Rust Corsair', 'Toll Collector', 'Ashen Cutter', 'Scav Hauler', 'Rift Marauder', 'Grey Warden', 'Hollow Pike', 'Cinder Wasp', 'Bleak Tern'];
+
+// Weapon loadouts by threat tier (index = tier).
+const LOADOUTS: string[][][] = [
+  [['needle'], ['volley'], ['slug']],
+  [['needle', 'ion'], ['pike'], ['volley'], ['needle', 'needle']],
+  [['volley', 'ion'], ['lance', 'needle'], ['pike', 'needle'], ['scatter'], ['slug', 'ion']],
+  [['volley', 'lance'], ['ion', 'pike'], ['scatter', 'ion'], ['swarm', 'needle'], ['slug', 'volley']],
+  [['volley', 'cleaver'], ['surge', 'volley', 'needle'], ['scatter', 'lance', 'ion'], ['swarm', 'pike', 'needle'], ['cleaver', 'ion', 'needle']],
+];
+
+function build(name: string, style: HullStyle, rooms: RoomDef[], level: number, weapons: string[], hull: number, crew: number): ShipDef {
   const wPower = weapons.reduce((s, id) => s + WEAPONS[id].power, 0);
-  const shields = sector >= 9 ? 6 : sector >= 5 ? 4 : 2;
-  const engines = 1 + Math.min(3, Math.floor(sector / 3));
-  const systems = { shields, engines, oxygen: 1, medbay: 1, weapons: wPower, piloting: 1 };
+  const shields = level >= 12 ? 6 : level >= 5 ? 4 : 2;
+  const engines = 1 + Math.min(3, Math.floor(level / 3));
   return {
-    name: pick(NAMES),
-    style: tpl.style,
-    hull: 8 + Math.round(sector * 1.5),
+    name, style, hull, rooms, weapons, crew,
     reactor: shields + engines + 2 + wPower,
-    rooms: tpl.rooms,
-    systems,
+    systems: { shields, engines, oxygen: 1, medbay: 1, weapons: wPower, piloting: 1 },
     power: { shields, engines, oxygen: 1, medbay: 1 },
-    weapons,
-    crew: Math.min(4, 2 + Math.floor(sector / 3)),
-    missiles: 6,
+    missiles: 8,
   };
+}
+
+/** A hostile ship for a given threat level (1 = first beacon, ~11 = last sector). */
+export function makeEnemyDef(level: number, rand: () => number): ShipDef {
+  const pick = <T,>(a: T[]) => a[Math.floor(rand() * a.length)];
+  const tpl = level >= 4 ? pick(TEMPLATES) : pick(TEMPLATES.slice(0, 3));
+  const tier = Math.min(LOADOUTS.length - 1, Math.floor((level - 1) / 2));
+  return build(pick(NAMES), tpl.style, tpl.rooms, level, pick(LOADOUTS[tier]), 8 + Math.round(level * 1.5), Math.min(5, 2 + Math.floor(level / 3)));
+}
+
+/** The flagship guarding the final beacon. */
+export function makeBossDef(): ShipDef {
+  const def = build('Warden Flagship', 'citadel', BOSS_ROOMS, 9, ['volley', 'lance', 'ion', 'pike'], 28, 6);
+  def.missiles = 20;
+  // Slow and heavy: a big target that relies on its armour rather than dodging.
+  def.reactor -= def.systems.engines! - 2;
+  def.systems.engines = def.power.engines = 2;
+  return def;
 }

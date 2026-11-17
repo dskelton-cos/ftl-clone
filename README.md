@@ -1,7 +1,7 @@
 # Drift Protocol
 
 A browser game about keeping a fragile starship alive: divide reactor power between systems,
-direct your crew, and fight off the ships hunting you. Real-time, with pause.
+direct your crew, and outrun the Warden fleet across five sectors to reach the gate. Real-time combat, with pause.
 Plays with **mouse + keyboard** or a **game controller** (Xbox, PlayStation, Switch Pro, most USB/Bluetooth pads).
 
 ## Run it
@@ -25,6 +25,9 @@ npm run build    # static site in dist/ (deploy anywhere)
 | Cancel | Right-click / Esc | B |
 | Jump away | J | RT |
 | Menu | Esc | Back / Select |
+| Map: choose a beacon | Click it (or arrows + Enter) | D-pad / stick, A |
+| Map: ship upgrades | U | Y |
+| Map: distress signal (out of fuel) | Button on the map | X |
 
 ## How it plays
 
@@ -33,14 +36,19 @@ npm run build    # static site in dist/ (deploy anywhere)
 - **Crew** in a room automatically fight fires, seal breaches and repair damage. Crew at Piloting,
   Engines, Shields and Weapons give bonuses, and Piloting must be manned to dodge or jump.
 - **Weapons:** lasers are stopped by shields, missiles go through them (and use ammo),
-  ion shots jam systems.
-- Win a fight to salvage scrap, then spend it on repairs, missiles and upgrades before jumping on.
+  ion shots jam systems, and beams sweep across several rooms (each shield layer cuts their damage).
+- **The run:** each sector is a map of linked beacons. Jumping costs 1 fuel, and the Warden fleet
+  (the red tide) advances with every jump. Beacons hold fights, events with choices, or stores.
+  Reach the exit to move to the next sector; the flagship guards the gate in sector 5.
+- **Scrap** from fights and events buys fuel, missiles, repairs, weapons and crew at stores, and
+  system upgrades anywhere.
 
 ## Code layout
 
 ```
 src/
-  core/    game flow, unified action layer, sound, RNG
+  core/    game controller, unified action layer, sound, RNG
+  run/     sector map generator, beacon events, run flow (stores, loot, upgrades)
   input/   gamepad polling (keyboard/mouse are wired in core/game.ts + main.ts)
   sim/     ship, rooms, power, crew pathfinding, oxygen/fire/breach, combat, enemy AI
   render/  canvas renderer (ships, effects, background)
@@ -55,7 +63,7 @@ The simulation in `src/sim` has no DOM dependencies and is covered by `tests/`.
 - [x] M1 skeleton, game loop, unified input (keyboard, mouse, gamepad)
 - [x] M2 ship sim: rooms, doors, crew, power, oxygen
 - [x] M3 combat: weapons, shields, evasion, fires, breaches, repairs, enemy AI, win/lose
-- [ ] M4 beams, more weapons and enemy types
-- [ ] M5 sector map, beacon events, shops, pursuit
+- [x] M4 beams, more weapons and enemy types, final boss
+- [x] M5 sector map, beacon events, stores, fuel, pursuing fleet
 - [ ] M6 polish: hangar, saving, more audio
 - [ ] M7 boarding, drones, teleporter, cloaking

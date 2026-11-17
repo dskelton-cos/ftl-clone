@@ -98,6 +98,7 @@ export class Ship {
   reactorFree = 0;
   missiles: number;
   scrap = 0;
+  fuel = 0;
   shieldLayers = 0;
   shieldCharge = 0;
   shieldFlash = 0;
@@ -241,6 +242,36 @@ export class Ship {
     c.path = c.moving ? [c.path[0], ...p] : p;
     c.goal = room;
     return true;
+  }
+
+  // ---------- outfitting ----------
+
+  static readonly MAX_WEAPONS = 4;
+  static readonly MAX_CREW = 8;
+
+  addWeapon(id: string): boolean {
+    if (this.weapons.length >= Ship.MAX_WEAPONS || !WEAPONS[id]) return false;
+    this.weapons.push(new Weapon(WEAPONS[id]));
+    this.updatePower();
+    return true;
+  }
+
+  removeWeapon(i: number) {
+    this.weapons.splice(i, 1);
+    this.updatePower();
+  }
+
+  addCrew(name: string, color: string): Crew | null {
+    if (this.crew.length >= Ship.MAX_CREW) return null;
+    const rooms = [...this.rooms].sort((a, b) => Number(!!a.system) - Number(!!b.system));
+    for (const room of rooms) {
+      const t = this.freeTile(room, null);
+      if (!t) continue;
+      const c = new Crew(name, color, t.x + 0.5, t.y + 0.5, room);
+      this.crew.push(c);
+      return c;
+    }
+    return null;
   }
 
   // ---------- power ----------
