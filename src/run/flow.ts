@@ -1,12 +1,14 @@
 import type { Game, Menu, MenuItem } from '../core/game';
 import { CREW_COLORS, CREW_NAMES } from '../data/crew';
-import { PLAYER_SHIP, makeBossDef, makeEnemyDef } from '../data/ships';
-import { SYSTEM_INFO, type SystemId } from '../data/systems';
+import { PLAYER_SHIPS, makeBossDef, makeEnemyDef, type ShipDef } from '../data/ships';
+import { DRONES } from '../data/drones';
+import { INSTALLABLE, SYSTEM_INFO, type SystemId } from '../data/systems';
 import { WEAPONS } from '../data/weapons';
 import type { PadButton } from '../input/gamepad';
 import type { BattleResult } from '../sim/battle';
 import { Ship } from '../sim/ship';
 import { EVENTS, type Choice, type Effects, type EventDef } from './events';
+import { clearSave, restoreShip, serialize, writeSave, type SaveData } from './save';
 import { SECTORS, SECTOR_COUNT, generateSector, isOverrun, type MapNode, type SectorMap } from './map';
 
 export interface RunState {
@@ -25,6 +27,9 @@ const UPGRADE_COST: Record<SystemId, (lvl: number) => number> = {
   oxygen: (l) => 25 * l,
   medbay: (l) => 25 * l,
   piloting: (l) => 20 * l,
+  cloaking: (l) => 30 + 20 * l,
+  teleporter: (l) => 30 + 20 * l,
+  drones: (l) => 15 + l * 6,
 };
 const MAX_REACTOR = 25;
 
@@ -41,9 +46,33 @@ export class RunFlow {
 
   // ---------- run lifecycle ----------
 
-  start() {
+  /** Ship selection before a run. */
+  hangar() {
     const g = this.g;
-    g.player = new Ship(PLAYER_SHIP, 'player', CREW_NAMES, CREW_COLORS);
+    const wname = (id: string) => WEAPONS[id].name;
+    g.openMenu({
+      title: 'HANGAR',
+      body: 'Choose your ship.',
+      items: [
+        ...PLAYER_SHIPS.map((d): MenuItem => {
+          const systems = Object.keys(d.systems).map((k) => SYSTEM_INFO[k as SystemId].name).join(', ');
+          return {
+            label: d.name,
+            sub: d.tagline,
+            detail: `${d.desc}<br><span class="stats-line">Hull ${d.hull} · Reactor ${d.reactor} · Crew ${d.crew} · Weapons: ${d.weapons.map(wname).join(', ')}${d.drones?.length ? ` · Drones: ${d.drones.map((x) => DRONES[x].name).join(', ')}` : ''}<br>Systems: ${systems}</span>`,
+            action: () => this.start(d),
+          };
+        }),
+        { label: 'Back', action: () => g.showTitle() },
+      ],
+      back: () => g.showTitle(),
+    });
+  }
+
+  start(def: ShipDef = PLAYER_SHIPS[0]) {
+    const g = this.g;
+    clearSave();
+    g.player = new Ship(def, 'player', CREW_NAMES, CREW_COLORS);
     g.player.scrap = 20;
     g.player.fuel = 12;
     const map = generateSector(0, g.rand);
@@ -51,6 +80,30 @@ export class RunFlow {
     g.renderer.makeBackground(Math.floor(this.rnd() * 1e9));
     g.showMap();
     this.sectorIntro();
+  }
+
+  resume(data: SaveData) {
+    const g = this.g;
+    g.player = restoreShip(data.ship);
+    const map = data.run.map;
+    this.state = {
+      sector: data.run.sector, map, current: map.nodes[data.run.current] ?? map.nodes[0],
+      kills: data.run.kills, jumps: data.run.jumps, battleKind: 'normal',
+    };
+    g.renderer.makeBackground(Math.floor(this.rnd() * 1e9));
+    g.showMap();
+    g.toast(`Resumed: sector ${data.run.sector + 1}, ${map.name}`);
+  }
+
+  /** Snapshot the run for saving (only called on the map, between beacons). */
+  snapshot(): SaveData | null {
+    if (!this.state || !this.g.player) return null;
+    return serialize(this.g.player, this.state);
+  }
+
+  save() {
+    const d = this.snapshot();
+    if (d) writeSave(d);
   }
 
   private sectorIntro() {
@@ -80,6 +133,7 @@ export class RunFlow {
     const g = this.g, s = this.s;
     g.mode = 'over';
     g.battle = null;
+    clearSave();
     g.recordBest(s.sector + 1);
     g.openMenu({
       title: 'SHIP LOST',
@@ -95,6 +149,7 @@ export class RunFlow {
     const g = this.g, s = this.s;
     g.mode = 'over';
     g.battle = null;
+    clearSave();
     g.recordBest(SECTOR_COUNT + 1);
     g.openMenu({
       title: 'THE GATE IS OPEN',
@@ -139,7 +194,7 @@ export class RunFlow {
     for (const c of p.crew) c.hp = Math.min(c.maxHp, c.hp + 30);
     p.refit();
     g.renderer.makeBackground(Math.floor(this.rnd() * 1e9));
-    g.sfx.play('click');
+    g.sfx.play('jump');
     this.focusDefault();
     this.arrive(n);
   }
@@ -231,7 +286,7 @@ export class RunFlow {
   }
 
   private loot() {
-    const g = this.g, s = this.s;
+    const g = this.g, s = this.s, p = this.p;
     const b = g.battle!;
     const lvl = this.level();
     let scrap = 10 + lvl * 3 + Math.floor(this.rnd() * 8) + (b.crewKill ? 15 : 0);
@@ -240,6 +295,7 @@ export class RunFlow {
     if (this.rnd() < 0.65) fx.fuel = 1 + Math.floor(this.rnd() * 3);
     if (this.rnd() < 0.4) fx.missiles = 1 + Math.floor(this.rnd() * 2);
     if (this.rnd() < 0.12) fx.weapon = true;
+    if (this.rnd() < (p.systems.drones ? 0.5 : 0.15)) fx.droneParts = 1 + Math.floor(this.rnd() * 2);
     const lines = this.apply(fx);
     g.mode = 'map';
     g.battle = null;
@@ -305,6 +361,7 @@ export class RunFlow {
     const sign = (n: number) => (n > 0 ? `+${n}` : `${n}`);
     if (e.scrap) { p.scrap = Math.max(0, p.scrap + e.scrap); out.push(`<b>${sign(e.scrap)} scrap</b>`); }
     if (e.fuel) { p.fuel = Math.max(0, p.fuel + e.fuel); out.push(`<b>${sign(e.fuel)} fuel</b>`); }
+    if (e.droneParts) { p.droneParts = Math.max(0, p.droneParts + e.droneParts); out.push(`<b>${sign(e.droneParts)} drone parts</b>`); }
     if (e.missiles) { p.missiles = Math.max(0, p.missiles + e.missiles); out.push(`<b>${sign(e.missiles)} missiles</b>`); }
     if (e.hull) { p.hull = Math.max(1, Math.min(p.maxHull, p.hull + e.hull)); out.push(`<b>${sign(e.hull)} hull</b>`); }
     if (e.crewHp) {
@@ -344,7 +401,9 @@ export class RunFlow {
   private openShop(n: MapNode) {
     if (!n.shop) {
       const ids = Object.keys(WEAPONS).sort(() => this.rnd() - 0.5).slice(0, 3);
-      n.shop = { weapons: ids, crew: this.rnd() < 0.65, sold: [] };
+      const drones = Object.keys(DRONES).sort(() => this.rnd() - 0.5).slice(0, 1 + Math.floor(this.rnd() * 2));
+      const sys = INSTALLABLE[Math.floor(this.rnd() * INSTALLABLE.length)].id;
+      n.shop = { weapons: ids, crew: this.rnd() < 0.65, sold: [], drones, system: sys };
     }
     this.showShop(n);
   }
@@ -372,10 +431,32 @@ export class RunFlow {
       items.push({
         label: `Buy ${w.name}`,
         sub: `${w.price} scrap · ${w.power} power`,
+        detail: w.desc,
         action: buy(w.price, () => { p.addWeapon(id); shop.sold.push(id); }),
         disabled: () => p.scrap < w.price || p.weapons.length >= Ship.MAX_WEAPONS,
       });
     }
+    if (shop.drones) {
+      for (const id of shop.drones) {
+        if (shop.sold.includes(id)) continue;
+        const d = DRONES[id];
+        items.push({
+          label: `Buy ${d.name}`, sub: `${d.price} scrap · ${d.power} power`, detail: `${d.desc} Needs Drone Control.`,
+          action: buy(d.price, () => { p.addDrone(id); shop.sold.push(id); }),
+          disabled: () => p.scrap < d.price || p.drones.length >= Ship.MAX_DRONES || !p.systems.drones,
+        });
+      }
+    }
+    if (shop.system && !p.systems[shop.system]) {
+      const inst = INSTALLABLE.find((x) => x.id === shop.system)!;
+      const info = SYSTEM_INFO[inst.id];
+      items.push({
+        label: `Install ${info.name}`, sub: `${inst.price} scrap`, detail: `${info.desc} Needs an empty room (you have ${p.freeRooms}).`,
+        action: buy(inst.price, () => p.installSystem(inst.id)),
+        disabled: () => p.scrap < inst.price || p.freeRooms === 0,
+      });
+    }
+    items.push({ label: 'Drone parts +2', sub: '8 scrap', action: buy(8, () => (p.droneParts += 2)), disabled: () => p.scrap < 8 });
     if (shop.crew) {
       items.push({
         label: 'Hire crew', sub: '35 scrap',
@@ -383,11 +464,11 @@ export class RunFlow {
         disabled: () => p.scrap < 35 || p.crew.length >= Ship.MAX_CREW,
       });
     }
-    items.push({ label: 'Sell a weapon', action: () => this.sellMenu(n), disabled: () => p.weapons.length <= 1 });
+    items.push({ label: 'Sell gear', action: () => this.sellMenu(n), disabled: () => p.weapons.length <= 1 && !p.drones.length });
     items.push({ label: 'Ship upgrades', action: () => this.upgrades(() => this.showShop(n)) });
     g.openMenu({
       title: 'STORE',
-      body: `A trading post bolted to an old relay. You have <b>${p.scrap} scrap</b>, ${p.fuel} fuel, ${p.missiles} missiles, ${p.weapons.length}/${Ship.MAX_WEAPONS} weapon slots used.`,
+      body: `A trading post bolted to an old relay. You have <b>${p.scrap} scrap</b>, ${p.fuel} fuel, ${p.missiles} missiles, ${p.droneParts} drone parts. Weapons ${p.weapons.length}/${Ship.MAX_WEAPONS}, drones ${p.drones.length}/${Ship.MAX_DRONES}.`,
       items,
       wide: true,
       back: () => g.closeMenu(),
@@ -398,7 +479,7 @@ export class RunFlow {
   private sellMenu(n: MapNode) {
     const g = this.g, p = this.p;
     g.openMenu({
-      title: 'SELL A WEAPON',
+      title: 'SELL GEAR',
       body: 'Stores pay half price.',
       items: [
         ...p.weapons.map((w, i): MenuItem => ({
@@ -406,6 +487,11 @@ export class RunFlow {
           sub: `+${Math.floor(w.def.price / 2)} scrap`,
           action: () => { p.scrap += Math.floor(w.def.price / 2); p.removeWeapon(i); g.sfx.play('click'); this.showShop(n); },
           disabled: () => p.weapons.length <= 1,
+        })),
+        ...p.drones.map((d, i): MenuItem => ({
+          label: `Sell ${d.def.name}`,
+          sub: `+${Math.floor(d.def.price / 2)} scrap`,
+          action: () => { p.scrap += Math.floor(d.def.price / 2); p.removeDrone(i); g.sfx.play('click'); this.showShop(n); },
         })),
         { label: 'Back', action: () => this.showShop(n) },
       ],

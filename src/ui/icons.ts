@@ -7,6 +7,9 @@ export const ICON_PATHS: Record<SystemId, string> = {
   oxygen: 'M8.5 7 a5 5 0 1 0 0.01 0 Z M15.5 14 a2.2 2.2 0 1 1 3.8 1.5 L15.5 20 H20',
   medbay: 'M9 3 H15 V9 H21 V15 H15 V21 H9 V15 H3 V9 H9 Z',
   weapons: 'M3 9 H15 L21 12 L15 15 H3 Z M6 15 V19 H10 V15',
+  cloaking: 'M2 12 C6 6 18 6 22 12 C18 18 6 18 2 12 Z M4 20 L20 4',
+  teleporter: 'M6 4 H18 M6 20 H18 M9 8 V16 M15 8 V16 M12 7 V17',
+  drones: 'M12 9 L15 12 L12 15 L9 12 Z M5 5 L9 9 M19 5 L15 9 M5 19 L9 15 M19 19 L15 15 M3 5 a2 2 0 1 0 4 0 a2 2 0 1 0 -4 0 M17 5 a2 2 0 1 0 4 0 a2 2 0 1 0 -4 0',
   piloting: 'M12 4 a8 8 0 1 0 0.01 0 Z M12 4 V20 M4 12 H20 M12 9 a3 3 0 1 0 0.01 0 Z',
 };
 

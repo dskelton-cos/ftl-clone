@@ -156,3 +156,18 @@ button { font-family: var(--font); cursor: pointer; }
 .res .low b { color: #ff6b6b; }
 .res { align-items: center; }
 .res .iconbtn { margin-left: auto; }
+
+/* ---------- M6/M7 additions ---------- */
+#hud-hints.inbattle { right: auto; left: 820px; bottom: auto; top: 140px; width: 436px; font-size: 11px; line-height: 1.8; padding: 4px 8px; background: rgba(9,14,22,.75); }
+#hud-power { max-width: 1252px; }
+.wpn { width: 104px; }
+.wpn.drone { width: 96px; }
+.wpn.drone.on { border-color: #9fd8ff; }
+.abil { display: flex; flex-direction: column; gap: 4px; padding-left: 8px; border-left: 1px solid var(--line-dim); align-self: stretch; justify-content: flex-end; }
+.ab { position: relative; overflow: hidden; width: 86px; padding: 4px 6px; font: 800 11px var(--font); letter-spacing: 1px; text-align: left; color: var(--muted); background: #10171d; border: 1px solid #34434b; border-radius: 5px; }
+.ab i { position: absolute; left: 0; bottom: 0; height: 3px; background: #b9a8ff; }
+.ab.ready { color: var(--text); border-color: #b9a8ff; }
+.ab.active { background: #b9a8ff; color: #140c24; }
+.ab kbd { float: right; }
+.menu .detail { margin-top: 10px; padding: 10px 12px; border: 1px solid #2c3a42; border-radius: 6px; font-size: 13px; color: var(--text); line-height: 1.45; background: rgba(255,255,255,.03); }
+.stats-line { color: var(--muted); font-size: 12px; }

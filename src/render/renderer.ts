@@ -12,6 +12,7 @@ export interface View {
   battle: Battle | null;
   selCrew: Crew | null;
   armed: number | null;
+  teleArmed: boolean;
   hover: RoomRef | null;
   cursor: RoomRef | null;
   paused: boolean;
@@ -105,6 +106,7 @@ export class Renderer {
     this.drawTargets(view, b);
     this.drawProjectiles(b);
     this.drawBeams(b);
+    this.drawDrones(b);
     for (const p of b.particles) {
       ctx.globalAlpha = Math.max(0, p.life / p.max);
       ctx.fillStyle = p.color;
@@ -148,6 +150,7 @@ export class Renderer {
     if (ship.dead && deadFor > 1.6) return;
     ctx.save();
     if (ship.dead) ctx.globalAlpha = Math.max(0, 1 - deadFor / 1.6);
+    if (ship.cloakTime > 0) ctx.globalAlpha = 0.35 + Math.sin(this.t * 7) * 0.08;
 
     // shields
     if (ship.shieldLayers > 0 || ship.shieldFlash > 0) {
@@ -251,7 +254,7 @@ export class Renderer {
 
     // room highlight for move orders
     const hv = view.hover;
-    if (ship.side === 'player' && view.selCrew && view.armed === null && hv && hv.ship === ship) {
+    if (view.selCrew && ship.crew.includes(view.selCrew) && view.armed === null && !view.teleArmed && hv && hv.ship === ship) {
       const rr = ship.roomRect(hv.room);
       ctx.strokeStyle = '#7dffb0';
       ctx.lineWidth = 2;
@@ -259,6 +262,16 @@ export class Renderer {
     }
 
     for (const c of ship.crew) this.drawCrew(ship, c, c === view.selCrew);
+    if (ship.cloakTime > 0) {
+      const c = ship.center(), { rx, ry } = ship.shieldRadii();
+      ctx.globalAlpha = 0.5;
+      ctx.strokeStyle = '#b9a8ff';
+      ctx.setLineDash([6, 8]);
+      ctx.lineDashOffset = -this.t * 30;
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.ellipse(c.x, c.y, rx - 10, ry - 10, 0, 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([]);
+    }
 
     if (view.cursor && view.cursor.ship === ship) {
       const rr = ship.roomRect(view.cursor.room);
@@ -354,6 +367,14 @@ export class Renderer {
     const x = p.x + (working ? bob : 0), y = p.y + (c.moving ? bob : 0);
     ctx.fillStyle = 'rgba(0,0,0,0.25)';
     ctx.beginPath(); ctx.ellipse(p.x, p.y + 9, 9, 4, 0, 0, Math.PI * 2); ctx.fill();
+    if (c.owner !== ship.side) {
+      // boarders get a warning ring on the ship they invaded
+      ctx.strokeStyle = c.owner === 'enemy' ? '#ff4b4b' : '#c58bff';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath(); ctx.arc(x, y, 12, 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([]);
+    }
     if (selected) {
       ctx.strokeStyle = '#7dffb0';
       ctx.lineWidth = 2.5;
@@ -365,6 +386,14 @@ export class Renderer {
     ctx.beginPath(); ctx.arc(x, y, 9, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
     ctx.fillStyle = 'rgba(200,240,255,0.9)';
     ctx.fillRect(x + (c.facing > 0 ? 1 : -7), y - 4, 6, 4);
+    if (c.task === 'fight') {
+      // little clash sparks
+      ctx.fillStyle = '#ffe08a';
+      for (let i = 0; i < 3; i++) {
+        const a = c.anim * 9 + i * 2.1;
+        ctx.fillRect(x + Math.cos(a) * 12 - 1, y - 10 + Math.sin(a) * 4 - 1, 2.5, 2.5);
+      }
+    }
     if (c.task === 'man') {
       ctx.fillStyle = '#2fa36b';
       ctx.beginPath(); ctx.arc(x + 8, y - 8, 3, 0, Math.PI * 2); ctx.fill();
@@ -386,6 +415,17 @@ export class Renderer {
       const cx = rr.x + rr.w / 2 + (i - (b.player.weapons.length - 1) / 2) * 12, cy = rr.y + rr.h / 2;
       this.reticle(cx, cy, 11, w.on ? '#ffd84a' : '#8a8a8a', String(i + 1));
     });
+    if (view.teleArmed) {
+      const ref = view.hover?.ship === b.enemy ? view.hover : view.cursor?.ship === b.enemy ? view.cursor : null;
+      if (ref) {
+        const rr = b.enemy.roomRect(ref.room);
+        ctx.fillStyle = 'rgba(197,139,255,0.25)';
+        ctx.fillRect(rr.x, rr.y, rr.w, rr.h);
+        ctx.strokeStyle = '#c58bff';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(rr.x + 2, rr.y + 2, rr.w - 4, rr.h - 4);
+      }
+    }
     if (view.armed !== null) {
       const ref = view.hover?.ship === b.enemy ? view.hover : view.cursor?.ship === b.enemy ? view.cursor : null;
       if (ref) {
@@ -431,6 +471,36 @@ export class Renderer {
       }
       ctx.restore();
     }
+  }
+
+  private drawDrones(b: Battle) {
+    const ctx = this.ctx;
+    for (const [ship, other] of [[b.player, b.enemy], [b.enemy, b.player]] as const) {
+      if (ship.dead) continue;
+      for (const d of ship.drones) {
+        if (!d.on) continue;
+        const around = d.def.kind === 'strike' ? other : ship;
+        if (around.dead) continue;
+        const p = b.dronePos(d, around);
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.rotate(d.angle + Math.PI / 2);
+        ctx.fillStyle = ship.side === 'player' ? '#9fd8ff' : '#ff8fb0';
+        ctx.strokeStyle = '#1b1d22';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        if (d.def.kind === 'strike') { ctx.moveTo(0, -9); ctx.lineTo(7, 6); ctx.lineTo(0, 3); ctx.lineTo(-7, 6); }
+        else { ctx.moveTo(0, -7); ctx.lineTo(7, 0); ctx.lineTo(0, 7); ctx.lineTo(-7, 0); }
+        ctx.closePath(); ctx.fill(); ctx.stroke();
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(-1.5, -1.5, 3, 3);
+        ctx.restore();
+      }
+    }
+    ctx.strokeStyle = '#9fe6ff';
+    ctx.lineWidth = 2;
+    for (const z of b.zaps) { ctx.globalAlpha = z.life / 0.15; line(ctx, z.x0, z.y0, z.x1, z.y1); }
+    ctx.globalAlpha = 1;
   }
 
   private drawBeams(b: Battle) {

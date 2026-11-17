@@ -1,8 +1,9 @@
+import type { SystemId } from '../data/systems';
 import { EVENTS } from './events';
 
 export type NodeType = 'start' | 'combat' | 'event' | 'shop' | 'empty' | 'exit' | 'boss';
 
-export interface ShopStock { weapons: string[]; crew: boolean; sold: string[] }
+export interface ShopStock { weapons: string[]; crew: boolean; sold: string[]; drones?: string[]; system?: SystemId }
 
 export interface MapNode {
   id: number;

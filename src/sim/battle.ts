@@ -1,6 +1,6 @@
 import type { WeaponDef } from '../data/weapons';
-import { crewAI, pickTarget } from './ai';
-import { TILE, type Room, type Ship, type Weapon } from './ship';
+import { boarderAI, crewAI, pickTarget } from './ai';
+import { TILE, type Crew, type Drone, type Room, type Ship, type Side, type Weapon } from './ship';
 
 export interface Projectile {
   def: WeaponDef;
@@ -29,15 +29,21 @@ export interface Beam {
   blocked: boolean;
 }
 
+const DRONE_SHOT: WeaponDef = {
+  id: 'drone', name: 'Drone', kind: 'laser', shots: 1, damage: 1, ion: 0, power: 0, charge: 0, pierce: false, ammo: false,
+  fireChance: 0.05, breachChance: 0.05, speed: 700, beamLength: 0, price: 0, desc: '',
+};
+
 export interface Particle { x: number; y: number; vx: number; vy: number; life: number; max: number; color: string; size: number }
 export interface FloatText { x: number; y: number; text: string; color: string; life: number }
 export type BattleResult = 'win' | 'lose' | 'fled' | null;
-export type SfxName = 'laser' | 'missile' | 'ion' | 'beam' | 'hit' | 'shield' | 'miss' | 'explode' | 'death';
+export type SfxName = 'laser' | 'missile' | 'ion' | 'beam' | 'teleport' | 'cloak' | 'drone' | 'alarm' | 'hit' | 'shield' | 'miss' | 'explode' | 'death';
 
 /** One encounter between the player and an enemy ship. Pure simulation: no DOM, no rendering. */
 export class Battle {
   projectiles: Projectile[] = [];
   beams: Beam[] = [];
+  zaps: { x0: number; y0: number; x1: number; y1: number; life: number }[] = [];
   particles: Particle[] = [];
   texts: FloatText[] = [];
   sfx: SfxName[] = [];
@@ -45,25 +51,162 @@ export class Battle {
   result: BattleResult = null;
   resultTime = 0;
   crewKill = false;
+  intercepts = 0;
   shake = 0;
   private aiTimer = 0;
   private boomTimer = 0;
 
   constructor(public player: Ship, public enemy: Ship) {
+    enemy.updatePower();
     crewAI(enemy);
     for (const w of enemy.weapons) w.target = pickTarget(player);
+  }
+
+  /** All living crew belonging to a side, wherever they are. */
+  crewOf(side: Side): Crew[] {
+    return [...this.player.crew, ...this.enemy.crew].filter((c) => c.owner === side);
+  }
+
+  shipOf(c: Crew): Ship | null {
+    return this.player.crew.includes(c) ? this.player : this.enemy.crew.includes(c) ? this.enemy : null;
+  }
+
+  // ---------- teleporter ----------
+
+  /** Beam every idle crew member standing in `from`'s teleporter room onto `room` of `to`. */
+  teleport(from: Ship, to: Ship, room: Room): number {
+    const tp = from.systems.teleporter;
+    if (!tp || !from.canTeleport || to.dead) return 0;
+    const party = from.crew.filter((c) => c.owner === from.side && c.room === tp.room && !c.moving);
+    if (!party.length) return 0;
+    let sent = 0;
+    for (const c of party) if (this.moveCrew(c, from, to, room)) sent++;
+    if (sent) {
+      from.teleCharge = 0;
+      this.sfx.push('teleport');
+    }
+    return sent;
+  }
+
+  /** Bring a side's crew home from the other ship. */
+  recall(home: Ship, away: Ship, force = false): number {
+    const tp = home.systems.teleporter;
+    if (!force && (!tp || tp.power <= 0)) return 0;
+    const party = away.crew.filter((c) => c.owner === home.side);
+    const dest = tp?.room ?? home.rooms[0];
+    let n = 0;
+    for (const c of party) if (this.moveCrew(c, away, home, dest)) n++;
+    if (n) this.sfx.push('teleport');
+    return n;
+  }
+
+  private moveCrew(c: Crew, from: Ship, to: Ship, room: Room): boolean {
+    const rooms = [room, ...to.rooms.filter((r) => r !== room).sort((a, b) => Math.abs(a.cx - room.cx) + Math.abs(a.cy - room.cy) - Math.abs(b.cx - room.cx) - Math.abs(b.cy - room.cy))];
+    for (const r of rooms) {
+      const t = to.freeTile(r, null);
+      if (!t) continue;
+      const p0 = from.crewPx(c);
+      this.burst(p0.x, p0.y, '#c58bff', 10, 70);
+      from.crew = from.crew.filter((o) => o !== c);
+      c.path = [];
+      c.x = t.x + 0.5;
+      c.y = t.y + 0.5;
+      c.room = c.goal = r;
+      to.crew.push(c);
+      const p1 = to.crewPx(c);
+      this.burst(p1.x, p1.y, '#c58bff', 12, 70);
+      return true;
+    }
+    return false;
+  }
+
+  // ---------- enemy abilities ----------
+
+  private enemyAbilities() {
+    const e = this.enemy, p = this.player;
+    // Cloak when the player's guns are about to fire.
+    if (e.canCloak && p.weapons.some((w) => w.on && w.charge >= w.def.charge - 0.5 && w.target)) {
+      if (e.cloak()) this.sfx.push('cloak');
+    }
+    // Boarding party: two crew (never the pilot) head to the teleporter and beam over.
+    const tp = e.systems.teleporter;
+    if (tp && tp.power > 0 && !p.crew.some((c) => c.owner === 'enemy')) {
+      const home = e.crew.filter((c) => c.owner === 'enemy');
+      let party = home.filter((c) => c.boarding);
+      if (!party.length && home.length >= 3 && e.teleCharge >= 1) {
+        party = home.filter((c) => c.station !== 'piloting' && c.hp > 60).slice(0, 2);
+        party.forEach((c) => { c.boarding = true; e.orderCrew(c, tp.room); });
+      }
+      if (party.length && party.every((c) => c.room === tp.room && !c.moving) && e.teleCharge >= 1) {
+        const targets = p.rooms.filter((r) => r.system && ['shields', 'weapons', 'piloting', 'engines'].includes(r.system.id));
+        const room = targets[Math.floor(Math.random() * targets.length)] ?? p.rooms[0];
+        if (this.teleport(e, p, room)) this.text(p.center().x, p.oy - 30, 'INTRUDERS!', '#ff6b6b');
+      }
+    }
+  }
+
+  // ---------- drones ----------
+
+  private updateDrones(dt: number) {
+    for (const [ship, other] of [[this.player, this.enemy], [this.enemy, this.player]] as const) {
+      for (const d of ship.drones) {
+        if (!d.on) continue;
+        d.angle += dt * (d.def.kind === 'strike' ? 0.7 : 1.1);
+        d.timer -= dt;
+        if (d.timer > 0) continue;
+        if (d.def.kind === 'strike') {
+          if (other.dead || ship.dead) continue;
+          d.timer = d.def.rate;
+          const from = this.dronePos(d, other);
+          const room = pickTarget(other);
+          const rr = other.roomRect(room);
+          const tx = rr.x + rr.w / 2, ty = rr.y + rr.h / 2;
+          const len = Math.hypot(tx - from.x, ty - from.y) || 1;
+          const def = { ...DRONE_SHOT, damage: d.def.damage, name: d.def.name };
+          this.projectiles.push({
+            def, owner: ship, target: other, room, x: from.x, y: from.y, tx, ty,
+            vx: ((tx - from.x) / len) * def.speed, vy: ((ty - from.y) / len) * def.speed,
+            checked: false, miss: false, life: 3, dead: false,
+          });
+          this.sfx.push('drone');
+        } else {
+          const me = ship.center();
+          const threat = this.projectiles.find((p) => p.target === ship && !p.dead && !p.miss && d.def.targets.includes(p.def.kind) && Math.hypot(p.x - me.x, p.y - me.y) < 360);
+          if (!threat) continue;
+          d.timer = d.def.rate;
+          threat.dead = true;
+          this.intercepts++;
+          const from = this.dronePos(d, ship);
+          this.zaps.push({ x0: from.x, y0: from.y, x1: threat.x, y1: threat.y, life: 0.15 });
+          this.burst(threat.x, threat.y, '#9fe6ff', 10, 90);
+          this.sfx.push('drone');
+        }
+      }
+    }
+    for (const z of this.zaps) z.life -= dt;
+    this.zaps = this.zaps.filter((z) => z.life > 0);
+  }
+
+  /** Orbit position of a drone around the ship it circles. */
+  dronePos(d: Drone, around: Ship) {
+    const c = around.center(), { rx, ry } = around.shieldRadii();
+    const k = d.def.kind === 'strike' ? 1.12 : 0.92;
+    return { x: c.x + Math.cos(d.angle) * rx * k, y: c.y + Math.sin(d.angle) * ry * k };
   }
 
   update(dt: number) {
     this.time += dt;
     const active = this.result === null;
+    this.player.chargeFrozen = this.enemy.cloakTime > 0;
+    this.enemy.chargeFrozen = this.player.cloakTime > 0;
+    const hullBefore = this.player.hull;
     this.player.update(dt);
     if (!this.enemy.dead) this.enemy.update(dt);
     for (const ship of [this.player, this.enemy]) {
       for (const c of ship.deaths) {
         const p = ship.crewPx(c);
         this.burst(p.x, p.y, '#ff4b4b', 14, 80);
-        this.text(p.x, p.y - 14, `${c.name} lost`, '#ff7b7b');
+        this.text(p.x, p.y - 14, c.owner === 'player' ? `${c.name} lost` : 'Enemy crew killed', c.owner === 'player' ? '#ff7b7b' : '#ffd27f');
         this.sfx.push('death');
       }
       ship.deaths.length = 0;
@@ -74,8 +217,11 @@ export class Battle {
       if (this.aiTimer <= 0) {
         this.aiTimer = 0.4;
         crewAI(this.enemy);
+        boarderAI(this.player, 'enemy');
+        this.enemyAbilities();
         for (const w of this.enemy.weapons) if (!w.target) w.target = pickTarget(this.player);
       }
+      this.updateDrones(dt);
       this.fireWeapons(this.player, this.enemy, dt);
       this.fireWeapons(this.enemy, this.player, dt);
     }
@@ -92,13 +238,25 @@ export class Battle {
     this.texts = this.texts.filter((t) => t.life > 0);
     this.shake = Math.max(0, this.shake - dt * 30);
 
+    if (hullBefore > this.player.maxHull * 0.3 && this.player.hull <= this.player.maxHull * 0.3) this.sfx.push('alarm');
+
     if (active) {
-      if (this.enemy.hull <= 0 || this.enemy.crew.length === 0) {
+      if (this.enemy.hull <= 0 || this.crewOf('enemy').length === 0) {
         this.result = 'win';
         this.crewKill = this.enemy.hull > 0;
+        // Boarders come home if the enemy crew is gone; if the ship blows up they go with it.
+        if (this.crewKill) this.recall(this.player, this.enemy, true);
+        else {
+          for (const c of this.enemy.crew.filter((o) => o.owner === 'player')) {
+            const p = this.enemy.crewPx(c);
+            this.text(p.x, p.y - 14, `${c.name} lost`, '#ff7b7b');
+          }
+        }
+        this.enemy.crew = this.enemy.crew.filter((c) => c.owner === 'enemy');
+        this.player.crew = this.player.crew.filter((c) => c.owner === 'player');
         this.enemy.dead = true;
         this.sfx.push('explode');
-      } else if (this.player.hull <= 0 || this.player.crew.length === 0) {
+      } else if (this.player.hull <= 0 || this.crewOf('player').length === 0) {
         this.result = 'lose';
         this.player.dead = true;
         this.sfx.push('explode');

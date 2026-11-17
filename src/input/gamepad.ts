@@ -1,10 +1,10 @@
 export type PadButton =
-  | 'A' | 'B' | 'X' | 'Y' | 'LB' | 'RB' | 'LT' | 'RT' | 'BACK' | 'START'
+  | 'A' | 'B' | 'X' | 'Y' | 'LB' | 'RB' | 'LT' | 'RT' | 'BACK' | 'START' | 'LS'
   | 'UP' | 'DOWN' | 'LEFT' | 'RIGHT';
 
 // Standard Gamepad API mapping (Xbox / PlayStation / Switch Pro in "standard" mode).
 const BUTTONS: [number, PadButton][] = [
-  [0, 'A'], [1, 'B'], [2, 'X'], [3, 'Y'], [4, 'LB'], [5, 'RB'], [6, 'LT'], [7, 'RT'], [8, 'BACK'], [9, 'START'],
+  [0, 'A'], [1, 'B'], [2, 'X'], [3, 'Y'], [4, 'LB'], [5, 'RB'], [6, 'LT'], [7, 'RT'], [8, 'BACK'], [9, 'START'], [10, 'LS'],
 ];
 const DIRS: [number, PadButton][] = [[12, 'UP'], [13, 'DOWN'], [14, 'LEFT'], [15, 'RIGHT']];
 

@@ -1,5 +1,6 @@
 import { SYSTEM_INFO, POWER_ORDER, EVASION_TABLE, type SystemId } from '../data/systems';
 import { WEAPONS, type WeaponDef } from '../data/weapons';
+import { DRONES, type DroneDef } from '../data/drones';
 import type { ShipDef } from '../data/ships';
 
 export const TILE = 38;
@@ -36,6 +37,7 @@ export class ShipSystem {
   ion = 0;
   ionTimer = 0;
   repair = 0;
+  sabotage = 0;
   desired = 0; // power the player asked for
   power = 0; // power actually delivered this tick
   constructor(public id: SystemId, public level: number, public room: Room) {}
@@ -56,7 +58,8 @@ export class Weapon {
   get ready() { return this.on && this.charge >= this.def.charge; }
 }
 
-export type CrewTask = 'idle' | 'man' | 'repair' | 'fire' | 'breach' | 'walk';
+export type CrewTask = 'idle' | 'man' | 'repair' | 'fire' | 'breach' | 'walk' | 'fight' | 'sabotage';
+export type Side = 'player' | 'enemy';
 
 export class Crew {
   hp = 100;
@@ -68,11 +71,21 @@ export class Crew {
   anim = Math.random() * 10;
   flash = 0;
   facing = 1;
-  constructor(public name: string, public color: string, public x: number, public y: number, public room: Room) {
+  boarding = false; // AI: assigned to a boarding party
+  constructor(public name: string, public color: string, public x: number, public y: number, public room: Room, public owner: Side = 'player') {
     this.goal = room;
   }
   get tile(): Tile { return { x: Math.floor(this.x), y: Math.floor(this.y) }; }
   get moving() { return this.path.length > 0; }
+}
+
+export class Drone {
+  desiredOn = false;
+  on = false;
+  deployed = false; // launched this battle (re-launching costs a part)
+  timer = 0;
+  angle = Math.random() * Math.PI * 2;
+  constructor(public def: DroneDef) {}
 }
 
 export class Door {
@@ -90,6 +103,8 @@ export class Ship {
   doors: Door[] = [];
   systems: Partial<Record<SystemId, ShipSystem>> = {};
   weapons: Weapon[];
+  drones: Drone[];
+  droneParts: number;
   crew: Crew[] = [];
   deaths: Crew[] = [];
   hull: number;
@@ -104,6 +119,10 @@ export class Ship {
   shieldFlash = 0;
   jumpCharge = 0;
   evasion = 0;
+  teleCharge = 1;
+  cloakTime = 0;
+  cloakCharge = 1;
+  chargeFrozen = false; // set by the battle while the opponent is cloaked
   ox = 0;
   oy = 0;
   gridW: number;
@@ -132,6 +151,12 @@ export class Ship {
       w.desiredOn = true;
       return w;
     });
+    this.drones = (def.drones ?? []).map((id) => {
+      const d = new Drone(DRONES[id]);
+      d.desiredOn = side === 'enemy';
+      return d;
+    });
+    this.droneParts = def.droneParts ?? 0;
     this.hull = this.maxHull = def.hull;
     this.reactor = def.reactor;
     this.missiles = def.missiles;
@@ -142,7 +167,7 @@ export class Ship {
       const station = stations[i] ?? null;
       const room = station ? this.systems[station]!.room : this.rooms.find((r) => !r.system) ?? this.rooms[0];
       const t = this.freeTile(room, null) ?? room.tiles()[0];
-      const c = new Crew(crewNames[i % crewNames.length], crewColors[i % crewColors.length], t.x + 0.5, t.y + 0.5, room);
+      const c = new Crew(crewNames[i % crewNames.length], crewColors[i % crewColors.length], t.x + 0.5, t.y + 0.5, room, side);
       c.station = station;
       this.crew.push(c);
     }
@@ -247,7 +272,38 @@ export class Ship {
   // ---------- outfitting ----------
 
   static readonly MAX_WEAPONS = 4;
+  static readonly MAX_DRONES = 2;
   static readonly MAX_CREW = 8;
+
+  /** Crew aboard that belong to this ship (excludes boarders). */
+  get ownCrew() { return this.crew.filter((c) => c.owner === this.side); }
+
+  /** Install a new level-1 system into an empty room. */
+  installSystem(id: SystemId): boolean {
+    if (this.systems[id]) return false;
+    const room = this.rooms
+      .filter((r) => !r.system && (id !== 'teleporter' || r.w * r.h >= 2))
+      .sort((a, b) => b.w * b.h - a.w * a.h)[0];
+    if (!room) return false;
+    const s = new ShipSystem(id, 1, room);
+    room.system = s;
+    this.systems[id] = s;
+    this.updatePower();
+    return true;
+  }
+
+  get freeRooms() { return this.rooms.filter((r) => !r.system).length; }
+
+  addDrone(id: string): boolean {
+    if (this.drones.length >= Ship.MAX_DRONES || !DRONES[id]) return false;
+    this.drones.push(new Drone(DRONES[id]));
+    return true;
+  }
+
+  removeDrone(i: number) {
+    this.drones.splice(i, 1);
+    this.updatePower();
+  }
 
   addWeapon(id: string): boolean {
     if (this.weapons.length >= Ship.MAX_WEAPONS || !WEAPONS[id]) return false;
@@ -267,7 +323,7 @@ export class Ship {
     for (const room of rooms) {
       const t = this.freeTile(room, null);
       if (!t) continue;
-      const c = new Crew(name, color, t.x + 0.5, t.y + 0.5, room);
+      const c = new Crew(name, color, t.x + 0.5, t.y + 0.5, room, this.side);
       this.crew.push(c);
       return c;
     }
@@ -295,6 +351,25 @@ export class Ship {
       else { used += c; remaining -= c; }
     }
     if (ws) ws.power = used;
+    const ds = this.systems.drones;
+    const dcap = ds ? ds.cap : 0;
+    let dused = 0;
+    for (const d of this.drones) {
+      const c = d.def.power;
+      d.on = d.desiredOn && dused + c <= dcap && c <= remaining;
+      if (d.on && !d.deployed) {
+        if (this.droneParts > 0) { this.droneParts--; d.deployed = true; }
+        else d.on = false;
+      }
+      if (!d.on) {
+        // Losing power to damage destroys a drone in flight.
+        if (d.desiredOn) d.deployed = false;
+        d.desiredOn = false;
+      } else { dused += c; remaining -= c; }
+    }
+    if (ds) ds.power = dused;
+    const cl = this.systems.cloaking;
+    if (!cl || cl.power <= 0) this.cloakTime = 0;
     const p = this.systems.piloting;
     if (p) p.power = p.cap;
     this.reactorFree = remaining;
@@ -334,6 +409,45 @@ export class Ship {
     return w.on ? 'ok' : 'reactor';
   }
 
+  droneOn(i: number): PowerResult | 'parts' {
+    const d = this.drones[i];
+    const ds = this.systems.drones;
+    if (!d || !ds) return 'none';
+    this.updatePower();
+    if (d.on) return 'ok';
+    if (ds.power + d.def.power > ds.cap) return ds.cap < ds.level ? 'damaged' : 'weapons';
+    if (this.reactorFree < d.def.power) return 'reactor';
+    if (!d.deployed && this.droneParts <= 0) return 'parts';
+    d.desiredOn = true;
+    this.updatePower();
+    return d.on ? 'ok' : 'reactor';
+  }
+
+  droneOff(i: number) {
+    const d = this.drones[i];
+    if (!d) return;
+    d.desiredOn = false;
+    d.on = false;
+    this.updatePower();
+  }
+
+  get canCloak() {
+    const cl = this.systems.cloaking;
+    return !!cl && cl.power > 0 && this.cloakCharge >= 1 && this.cloakTime <= 0;
+  }
+
+  cloak(): boolean {
+    if (!this.canCloak) return false;
+    this.cloakTime = 4 + 3 * this.systems.cloaking!.power;
+    this.cloakCharge = 0;
+    return true;
+  }
+
+  get canTeleport() {
+    const t = this.systems.teleporter;
+    return !!t && t.power > 0 && this.teleCharge >= 1;
+  }
+
   weaponOff(i: number) {
     const w = this.weapons[i];
     if (!w) return;
@@ -342,7 +456,7 @@ export class Ship {
   }
 
   isManned(s: ShipSystem | undefined): boolean {
-    return !!s && this.crew.some((c) => c.room === s.room && c.task === 'man');
+    return !!s && this.crew.some((c) => c.owner === this.side && c.room === s.room && c.task === 'man');
   }
 
   get canJump() {
@@ -373,7 +487,7 @@ export class Ship {
     } else this.shieldCharge = 0;
     this.shieldFlash = Math.max(0, this.shieldFlash - dt);
 
-    const wm = this.isManned(this.systems.weapons) ? 1.1 : 1;
+    const wm = this.chargeFrozen ? 0 : this.isManned(this.systems.weapons) ? 1.1 : 1;
     for (const w of this.weapons) {
       if (w.on) w.charge = Math.min(w.def.charge, w.charge + dt * wm);
       else w.charge = Math.max(0, w.charge - (dt * w.def.charge) / 2);
@@ -390,6 +504,14 @@ export class Ship {
         this.evasion = ev;
       }
     }
+    if (this.cloakTime > 0) {
+      this.cloakTime = Math.max(0, this.cloakTime - dt);
+      this.evasion = Math.min(95, this.evasion + 60);
+    } else if (this.systems.cloaking && this.systems.cloaking.power > 0) {
+      this.cloakCharge = Math.min(1, this.cloakCharge + dt / 20);
+    }
+    const tp = this.systems.teleporter;
+    if (tp && tp.power > 0) this.teleCharge = Math.min(1, this.teleCharge + dt / (22 - 5 * tp.power));
     if (this.side === 'player' && this.canJump) {
       this.jumpCharge = Math.min(1, this.jumpCharge + dt * (0.022 + 0.011 * eng!.power));
     }
@@ -424,7 +546,18 @@ export class Ship {
         }
       } else {
         const r = c.room;
-        if (r.fire > 0) { c.task = 'fire'; r.fire = Math.max(0, r.fire - FIRE_FIGHT * dt); }
+        const foe = this.crew.find((o) => o.owner !== c.owner && o.room === r && !o.moving && o.hp > 0);
+        if (foe) {
+          c.task = 'fight';
+          foe.hp -= 11 * dt;
+        } else if (c.owner !== this.side) {
+          // A boarder with nobody to fight wrecks the system it is standing in.
+          if (r.system && r.system.damage < r.system.level) {
+            c.task = 'sabotage';
+            r.system.sabotage += dt * 0.25;
+            if (r.system.sabotage >= 1) { r.system.damage++; r.system.sabotage = 0; }
+          } else c.task = 'idle';
+        } else if (r.fire > 0) { c.task = 'fire'; r.fire = Math.max(0, r.fire - FIRE_FIGHT * dt); }
         else if (r.breach > 0) { c.task = 'breach'; r.breach = Math.max(0, r.breach - BREACH_FIX * dt); }
         else if (r.system && r.system.damage > 0) {
           c.task = 'repair';
@@ -437,7 +570,7 @@ export class Ship {
       const r = c.room;
       if (r.oxygen < 5) c.hp -= 6 * dt;
       if (r.fire > 0) c.hp -= 9 * dt * (r.fire / 100);
-      if (medbay && r === medbay.room && medbay.power > 0) c.hp = Math.min(c.maxHp, c.hp + 9 * medbay.power * dt);
+      if (medbay && r === medbay.room && medbay.power > 0 && c.owner === this.side) c.hp = Math.min(c.maxHp, c.hp + 9 * medbay.power * dt);
     }
     const alive: Crew[] = [];
     for (const c of this.crew) (c.hp > 0 ? alive : this.deaths).push(c);
@@ -482,7 +615,14 @@ export class Ship {
 
   /** Patch the ship up between encounters (hull damage stays). */
   refit() {
-    for (const s of Object.values(this.systems)) { s.damage = 0; s.ion = 0; s.ionTimer = 0; s.repair = 0; }
+    for (const s of Object.values(this.systems)) { s.damage = 0; s.ion = 0; s.ionTimer = 0; s.repair = 0; s.sabotage = 0; }
+    this.crew = this.crew.filter((c) => c.owner === this.side);
+    for (const c of this.crew) { c.boarding = false; if (!c.moving) c.goal = c.room; }
+    for (const d of this.drones) { d.deployed = false; d.desiredOn = false; d.on = false; }
+    this.cloakTime = 0;
+    this.cloakCharge = 1;
+    this.teleCharge = 1;
+    this.chargeFrozen = false;
     for (const r of this.rooms) { r.oxygen = 100; r.fire = 0; r.breach = 0; r.fireAcc = 0; }
     for (const w of this.weapons) { w.charge = 0; w.target = null; w.burstLeft = 0; w.burstRoom = null; }
     this.jumpCharge = 0;

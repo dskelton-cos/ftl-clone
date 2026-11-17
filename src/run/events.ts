@@ -2,6 +2,7 @@ export interface Effects {
   scrap?: number;
   fuel?: number;
   missiles?: number;
+  droneParts?: number;
   hull?: number;
   crewHp?: number; // applied to every crew member (never fatal)
   newCrew?: boolean;
@@ -121,6 +122,28 @@ export const EVENTS: EventDef[] = [
     id: 'ambush', title: 'Silent Beacon',
     text: 'The beacon is quiet. Too quiet: a ship has its engines cold, waiting.',
     choices: [{ label: 'Battle stations', outcomes: [{ text: 'It powers up and charges straight at you.', fight: true }] }],
+  },
+  {
+    id: 'dronefield', title: 'Drone Graveyard',
+    text: 'Hundreds of dead drones drift around a burnt-out carrier. Some still twitch.',
+    choices: [
+      { label: 'Salvage parts', outcomes: [
+        { weight: 3, text: 'You fill a cargo bay with usable drone components.', effects: { droneParts: 4 } },
+        { weight: 1, text: 'A swarm reactivates and slams into your hull before you pull away.', effects: { droneParts: 2, hull: -3 } },
+      ] },
+      leave,
+    ],
+  },
+  {
+    id: 'mutiny', title: 'Mutiny in Progress',
+    text: 'A freighter crew is fighting its own officers over the comms. One side begs you to beam over and help.',
+    choices: [
+      { label: 'Side with the crew', outcomes: [
+        { weight: 2, text: 'The officers surrender. The grateful crew hand over their pay chest and one of them signs on with you.', effects: { scrap: 15, newCrew: true } },
+        { weight: 1, text: 'The officers seal the bulkheads and turn the ship\'s guns on you.', fight: true },
+      ] },
+      leave,
+    ],
   },
   {
     id: 'clinic', title: 'Field Clinic',
